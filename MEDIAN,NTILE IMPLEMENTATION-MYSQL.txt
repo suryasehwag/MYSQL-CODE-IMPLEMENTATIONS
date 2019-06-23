@@ -1,0 +1,1496 @@
+DELIMITER $$
+CREATE DEFINER=`root`@`%` PROCEDURE `ms_kpi_creation_intermediate_check`(
+p_tenant_id int,
+p_city_code varchar(50),
+p_reco_operating_cycle_code varchar(50),
+p_training_set_flag int
+)
+BEGIN
+
+DECLARE l_min_date_id_full_window int;
+DECLARE l_min_date_full_window date;
+DECLARE l_min_date_latest_two_months_window date;
+DECLARE l_max_date_full_window date;
+DECLARE l_max_date_id_full_window int;
+DECLARE l_min_operating_cycle_id_full_window int;
+DECLARE l_max_operating_cycle_id_full_window int;
+DECLARE l_min_operating_cycle_id_prior_six_months_window int;
+DECLARE l_max_operating_cycle_id_prior_six_months_window int;
+DECLARE l_min_date_id_latest_two_months_window int;
+DECLARE l_min_operating_cycle_id_latest_two_months_window int;
+DECLARE l_min_operating_cycle_id_latest_three_months_window int;
+DECLARE l_target_month_code varchar(20);
+
+
+
+set @l_city_code:=(CASE WHEN p_city_code='' THEN null else p_city_code end);
+
+set @month_no:=0;
+
+set @date_rank:=0;
+
+set @outlet_id:=0;
+
+set @product_id:=0;
+
+set @outlet_rank:=0;
+
+set @product_id_1:=0;
+
+set @outlet_rank_1:=0;
+
+set @product_id_2:=0;
+
+set @distributor_code_1:='';
+
+set @channel_code_1:='';
+
+set @outlet_segment_1:='';
+
+set @distributor_code_2:='';
+
+set @channel_code_2:='';
+
+set @outlet_segment_2:='';
+
+
+
+-- making the different windows for operating_cycle and date table
+
+
+
+select case when p_training_set_flag=1 then id-14 else id-12 end,
+
+case when p_training_set_flag=1 then id-4 else id-2 end ,
+
+case when p_training_set_flag=1 then id-5 else id-3 end,
+
+case when p_training_set_flag=1 then id-6 else id-4 end,
+
+case when p_training_set_flag=1 then id-11 else id-9 end,
+
+case when p_training_set_flag=1 then id-3 else id-1 end
+
+into 
+l_min_operating_cycle_id_full_window,
+l_min_operating_cycle_id_latest_two_months_window,
+l_min_operating_cycle_id_latest_three_months_window,
+l_max_operating_cycle_id_prior_six_months_window,
+l_min_operating_cycle_id_prior_six_months_window,
+l_max_operating_cycle_id_full_window
+
+from apex_edw.dim_Operating_cycle where tenant_id=p_tenant_id and code=p_reco_operating_cycle_code;
+
+select code into l_target_month_code from apex_edw.dim_Operating_cycle where tenant_id=p_tenant_id and id=l_max_operating_cycle_id_full_window+1;
+
+
+select l_min_operating_cycle_id_full_window,
+l_min_operating_cycle_id_latest_two_months_window,
+l_min_operating_cycle_id_latest_three_months_window,
+l_max_operating_cycle_id_prior_six_months_window,
+l_min_operating_cycle_id_prior_six_months_window,
+l_max_operating_cycle_id_full_window;
+
+select start_date into l_min_date_full_window from apex_edw.dim_Operating_cycle where id=l_min_Operating_cycle_id_full_window;
+
+select start_date into l_min_date_latest_two_months_window from apex_edw.dim_operating_cycle where id=l_min_operating_cycle_id_latest_two_months_window;
+
+select date_add(start_date,INTERVAL 19 DAY) into l_max_date_full_window from apex_edw.dim_Operating_cycle where id=l_max_operating_cycle_id_full_window;
+
+select id into l_min_date_id_full_window from apex_edw.dim_date where day_start_date=l_min_date_full_window;
+
+select id into l_min_date_id_latest_two_months_window  from apex_edw.dim_date where day_start_date=l_min_date_latest_two_months_window;
+
+select id into l_max_date_id_full_window  from apex_edw.dim_date where day_start_date=l_max_date_full_window;
+
+select l_min_date_id_full_window,l_max_date_id_full_window,l_min_date_id_latest_two_months_window;
+
+set @reference_start_date:=l_max_date_full_window;
+
+drop temporary table if exists gcpl_analysis.tmp_dim_operating_cycle;
+
+-- creation of temporary table containing operating_cycle_information
+
+
+create temporary table gcpl_analysis.tmp_dim_Operating_cycle as
+
+select p_tenant_id as tenant_id,id,@month_no:=@month_no+1 as month_number from
+
+apex_edw.dim_Operating_cycle where 
+tenant_id=p_tenant_id
+and
+id between l_min_Operating_cycle_id_full_window and l_max_operating_cycle_id_full_window
+order by id asc;
+
+create index idx_1 on gcpl_analysis.tmp_dim_operating_cycle(tenant_id,id);
+
+select 'operating_cycle_table created successfully';
+
+-- creation of temporary table containing the desired city list depending upon the parameter passed
+
+drop temporary table if exists gcpl_analysis.tmp_city_List;
+
+select @l_city_code;
+
+create temporary table gcpl_analysis.tmp_city_list
+as
+select * from gcpl_analysis.tlp_city_list
+where
+case when @l_city_code is not null then 
+lvl2_unique_cd=@l_city_code else
+lvl2_unique_cd is not null end;
+
+select * from gcpl_analysis.tmp_city_list;
+
+create index idx_1 on gcpl_analysis.tmp_city_list(lvl2_unique_cd);
+
+-- creation of outlet master
+
+-- creation of outlet segment table
+
+drop temporary table if exists gcpl_analysis.tmp_outlets;
+
+
+create temporary table gcpl_analysis.tmp_outlets as
+
+select a.tenant_id,a.outlet_id,a.outlet_code,a.city_code,b.outlet_segment,
+
+c.distributor_code,e.distributor_name,d.channel_code,d.channel_name
+
+from apex_edw.vw_dim_outlet a
+
+inner join 
+gcpl_analysis.tmp_city_List e
+
+on
+
+e.lvl2_unique_cd=a.city_code
+
+inner join
+
+gcpl_analysis.tmp_outlet_segments b
+
+on
+
+b.outlet_id=a.outlet_id
+
+inner join
+
+apex_edw.dim_map_outlet_distributor c
+on
+c.tenant_id=a.tenant_id and 
+c.outlet_code=a.outlet_code
+
+inner join
+apex_edw.vw_dim_distributor e
+on
+e.tenant_id=c.tenant_id and 
+e.distributor_code=c.distributor_code
+inner join
+
+apex_edw.vw_dim_channel d
+on
+d.tenant_id=a.tenant_id
+and
+d.channel_code=a.channel_name;
+
+create index idx_1 on gcpl_analysis.tmp_outlets(tenant_id,outlet_id);
+
+select 'outlet_master created successfully';
+
+-- product master creation
+
+drop temporary table if exists gcpl_analysis.tmp_product;
+create temporary table gcpl_analysis.tmp_product
+as
+select
+	A.tenant_id,A.product_id,A.product_code,
+	IFNULL(c.sub_category_code,A.sub_category_code) as brand_code,
+	IFNULL(c.sub_category_name,A.sub_category_name) as brand_name,
+	IFNULL(c.category_code,A.category_code) as category_code,
+	IFNULL(c.category_name,A.category_name) as category_name,
+    IFNULL(B.base_product_code, A.product_code) AS base_product_code,
+	IFNULL(c.product_id, A.product_id) AS base_product_id
+    
+from apex_edw.vw_dim_product A
+LEFT OUTER JOIN apex_edw.dim_map_product_relationship B 
+	ON A.tenant_id = B.tenant_id
+	AND A.product_code = B.product_code
+LEFT OUTER JOIN 
+apex_edw.vw_dim_product c
+on
+c.tenant_id=b.tenant_id
+and
+c.product_code=b.base_product_code
+where 
+	A.tenant_id     =  p_tenant_id
+;
+
+create index idx_1 on gcpl_analysis.tmp_product(tenant_id,product_id);
+
+select 'product master created successfully';
+
+-- generating the main master data set
+
+drop temporary table if exists gcpl_analysis.base_sales_data_intermediate;
+
+create temporary table gcpl_analysis.base_sales_data_intermediate as
+
+select a.tenant_id,a.date_id,b2.day_start_date as date,a.operating_cycle_id,b1.month_number,a.outlet_id,c.outlet_code,c.city_code,c.outlet_segment,
+
+c.distributor_code,c.distributor_name,c.channel_code,c.channel_name,b.brand_code,b.brand_name,b.category_code,b.category_name,
+    b.base_product_code as product_code,
+	b.base_product_id as product_id,sum(a.sales_units) as sales_units,sum(a.sales_value) as sales_value
+from
+apex_edw.fact_sales a
+inner join
+apex_edw.dim_date b2
+on
+b2.id=a.date_id
+inner join
+gcpl_analysis.tmp_dim_Operating_cycle b1
+on
+b1.tenant_id=a.tenant_id
+and
+b1.id=a.operating_cycle_id
+inner join
+gcpl_analysis.tmp_product b
+on
+b.tenant_id=a.tenant_id
+and
+b.product_id=a.product_id
+inner join
+gcpl_analysis.tmp_outlets c
+on
+c.tenant_id=a.tenant_id
+and
+c.outlet_id=a.outlet_id
+
+where
+a.tenant_id=p_tenant_id
+and
+a.date_id between l_min_date_id_full_window and l_max_date_id_full_window
+group
+by
+a.tenant_id,a.date_id,a.operating_cycle_id,a.outlet_id,b.base_product_id
+;
+
+select 'main_data_set intermediate set created successfully';
+
+drop table if exists gcpl_analysis.base_sales_data;
+
+create table gcpl_analysis.base_sales_data as
+
+select a.*,case when a.outlet_id!=@outlet_id or @product_id!=product_id then @date_rank:=1 else @date_rank:=@date_rank+1 end as date_rank,
+
+case when a.outlet_id!=@outlet_id or a.product_id!=@product_id then datediff(l_max_date_full_window,a.date) else datediff(@reference_start_date,a.date) end as day_level_gap,
+
+@outlet_id:=a.outlet_id,
+
+@product_id:=a.product_id,
+
+@reference_start_date:=a.date
+
+from gcpl_analysis.base_sales_data_intermediate a
+
+order by a.tenant_id,a.outlet_id,a.product_id,a.date desc
+
+;
+
+
+select 'final kpi table creation started';
+
+drop  table if exists gcpl_analysis.final_kpi_table;
+
+create table gcpl_analysis.final_kpi_table as
+
+SELECT 
+city_code,
+distributor_code,
+channel_code,
+channel_name,
+outlet_segment,
+outlet_id,
+outlet_code,
+brand_code,
+brand_name,
+category_code,
+category_name,
+product_id,
+product_code,
+datediff(l_max_date_full_window,max(date)) as SKU_Recency_of_purchase,
+count(distinct operating_cycle_id) as SKU_Sale_frequency_month_level,
+count(*) as SKU_sale_frequency_day_level,
+sum(distinct month_number) as SKU_Recency_plus_frequency_of_purchase,
+sum(sales_value) as total_sales_value,
+(datediff(l_max_date_full_window,max(date)))/(case when count(*)-1=0 then null else  (sum(case when date_rank!=1 then day_level_gap  end)/(count(*)-1)) end) as Last_sale_gap_to_previous_gap_ratio,
+max(case when date_rank=1 then sales_value end)/avg(sales_value) as Last_sale_value_to_avg_sale_ratio
+from
+gcpl_analysis.base_sales_data
+group by
+outlet_id,product_id;
+
+
+select 'final kpi table creation ended';
+
+/* city channel segment level all the tables */
+
+select 'city_channel_segment_level tables creation started';
+
+drop temporary table if exists gcpl_analysis.product_city_channel_segment_level_info;
+
+create temporary table gcpl_analysis.product_city_channel_segment_level_info
+as
+select product_id,product_code,city_code,channel_code,outlet_segment,sum(total_sales_value)/count(*) as avg_sales_value_per_outlet
+from
+gcpl_analysis.final_kpi_table
+group by
+product_Id,product_code,
+city_code,
+channel_code,
+outlet_segment;
+
+create index idx_1 on gcpl_analysis.product_city_channel_segment_level_info(product_id,city_code,channel_code,outlet_segment);
+
+create index idx_2 on gcpl_analysis.product_city_channel_segment_level_info(city_code,channel_code,outlet_segment);
+
+
+
+drop temporary table if exists gcpl_analysis.city_channel_segment_level_outlet_product_info_six_months;
+
+create temporary table gcpl_analysis.city_channel_segment_level_outlet_product_info_six_months
+as
+select distinct city_code,channel_code,outlet_segment,product_id,outlet_id
+from
+gcpl_analysis.base_sales_data
+where
+tenant_id=p_tenant_id
+and
+operating_cycle_id between l_min_operating_cycle_id_prior_six_months_window and l_max_operating_cycle_id_prior_six_months_window 
+;
+
+create index idx_1 on gcpl_analysis.city_channel_segment_level_outlet_product_info_six_months(outlet_id,product_id);
+
+drop temporary table if exists gcpl_analysis.city_channel_segment_level_outlet_product_info_three_months;
+
+create temporary table city_channel_segment_level_outlet_product_info_three_months
+as
+select distinct city_code,channel_code,outlet_segment,product_id,outlet_id
+from
+gcpl_analysis.base_sales_data
+where
+tenant_id=p_tenant_id
+and
+operating_cycle_id between l_min_operating_cycle_id_latest_three_months_window and l_max_operating_cycle_id_full_window 
+;
+
+create index idx_1 on gcpl_analysis.city_channel_segment_level_outlet_product_info_three_months(outlet_id,product_id);
+
+drop temporary table if exists gcpl_analysis.city_channel_segment_product_level_new_outlets_info;
+
+create temporary table  gcpl_analysis.city_channel_segment_product_level_new_outlets_info
+as
+select 
+a.city_code,a.channel_code,a.outlet_segment,a.product_id,count(*) as new_outlets_count
+
+from
+gcpl_analysis.city_channel_segment_level_outlet_product_info_three_months a
+
+left outer join
+
+gcpl_analysis.city_channel_segment_level_outlet_product_info_six_months b
+
+on
+b.outlet_id=a.outlet_id
+and
+b.product_id=a.product_id
+
+where
+
+b.outlet_id is null
+
+group by 
+a.city_code,a.channel_code,a.outlet_segment,a.product_id
+;
+
+create index idx_1 on gcpl_analysis.city_channel_segment_product_level_new_outlets_Info(product_id,city_code,channel_code,outlet_segment);
+
+drop temporary table if exists gcpl_analysis.city_channel_segment_level_outlet_count_info_last_three_months;
+
+create temporary table gcpl_analysis.city_channel_segment_level_outlet_count_info_last_three_months
+as
+select city_code,channel_code,outlet_segment,count(distinct outlet_id) as total_outlets_last_three_months
+from
+gcpl_analysis.city_channel_segment_level_outlet_product_info_three_months
+group by
+city_code,
+channel_code,
+outlet_segment;
+
+create index idx_1 on gcpl_analysis.city_channel_segment_level_outlet_count_info_last_three_months(city_code,channel_code,outlet_segment);
+
+
+
+drop temporary table if exists gcpl_analysis.city_channel_segment_level_outlet_count_info_last_one_month;
+
+create temporary table gcpl_analysis.city_channel_segment_level_outlet_count_info_last_one_month
+as
+select city_code,channel_code,outlet_segment,count(distinct outlet_id) as total_outlets_last_one_month
+from
+gcpl_analysis.base_sales_data
+where
+tenant_id=p_tenant_id
+and
+operating_cycle_id=l_max_operating_cycle_id_full_window
+
+group by
+city_code,
+channel_code,
+outlet_segment;
+
+create index idx_1 on gcpl_analysis.city_channel_segment_level_outlet_count_info_last_one_month(city_code,channel_code,outlet_segment);
+
+drop temporary table if exists gcpl_analysis.city_channel_segment_level_outlet_count_prior_six_months;
+
+create temporary table gcpl_analysis.city_channel_segment_level_outlet_count_prior_six_months
+as
+select city_code,channel_code,outlet_segment,count(distinct outlet_id) as total_outlets_prior_six_months
+from
+gcpl_analysis.city_channel_segment_level_outlet_product_info_six_months
+group by
+city_code,
+channel_code,
+outlet_segment;
+
+create index idx_1 on gcpl_analysis.city_channel_segment_level_outlet_count_prior_six_months(city_code,channel_code,outlet_segment);
+
+drop temporary table if exists gcpl_analysis.city_channel_segment_product_level_info_last_three_months;
+
+create temporary table gcpl_analysis.city_channel_segment_product_level_info_last_three_months
+as
+select city_code,channel_code,outlet_segment,product_id,count(distinct outlet_id) as total_outlets_selling_product_last_three_months
+from
+gcpl_analysis.city_channel_segment_level_outlet_product_info_three_months
+group by
+city_code,
+channel_code,
+outlet_segment,product_id;
+
+create index idx_1 on gcpl_analysis.city_channel_segment_product_level_info_last_three_months(product_id,city_code,channel_code,outlet_segment);
+
+
+drop temporary table if exists gcpl_analysis.city_channel_segment_product_level_info_last_one_month;
+
+create temporary table gcpl_analysis.city_channel_segment_product_level_info_last_one_month
+as
+select city_code,channel_code,outlet_segment,product_id,count(distinct outlet_id) as total_outlets_selling_product_last_one_month
+from
+gcpl_analysis.base_sales_data
+where
+tenant_id=p_tenant_id
+and
+operating_cycle_id=l_max_operating_cycle_id_full_window
+
+group by
+city_code,
+channel_code,
+outlet_segment,product_id;
+
+create index idx_1 on gcpl_analysis.city_channel_segment_product_level_info_last_one_month(product_id,city_code,channel_code,outlet_segment);
+
+drop table if exists gcpl_analysis.city_channel_segment_level_info;
+
+create table gcpl_analysis.city_channel_segment_level_info
+
+select a.*,ifnull(b.total_outlets_selling_product_last_one_month,0) as total_outlets_selling_product_last_one_month,
+ifnull(c.total_outlets_selling_product_last_three_months,0) as total_outlets_selling_product_last_three_months,
+ifnull(d.new_outlets_count,0) as new_outlets_count,
+e.total_outlets_last_one_month as total_outlet_count_last_one_month,
+f.total_outlets_last_three_months as total_outlet_count_last_three_months,
+g.total_outlets_prior_six_months as total_outlet_count_prior_six_months
+ from
+gcpl_analysis.product_city_channel_segment_level_info a
+left outer join
+gcpl_analysis.city_channel_segment_product_level_info_last_one_month b
+on
+b.product_id=a.product_id
+and
+b.city_code=a.city_code
+and
+b.channel_code=a.channel_code
+and
+b.outlet_segment=a.outlet_segment
+left outer join
+gcpl_analysis.city_channel_segment_product_level_info_last_three_months c
+on
+c.product_id=a.product_id
+and
+c.city_code=a.city_code
+and
+c.channel_code=a.channel_code
+and
+c.outlet_segment=a.outlet_segment
+left outer join
+gcpl_analysis.city_channel_segment_product_level_new_outlets_info d
+on
+d.product_id=a.product_id
+and
+d.city_code=a.city_code
+and
+d.channel_code=a.channel_code
+and
+d.outlet_segment=a.outlet_segment
+left outer join
+gcpl_analysis.city_channel_segment_level_outlet_count_info_last_one_month e
+on
+e.city_code=a.city_code
+and
+e.channel_code=a.channel_code
+and
+e.outlet_segment=a.outlet_segment
+left outer join
+gcpl_analysis.city_channel_segment_level_outlet_count_info_last_three_months f
+on
+f.city_code=a.city_code
+and
+f.channel_code=a.channel_code
+and
+f.outlet_segment=a.outlet_segment
+left outer join gcpl_analysis.city_channel_segment_level_outlet_count_prior_six_months g
+on
+g.city_code=a.city_code
+and
+g.channel_code=a.channel_code
+and
+g.outlet_segment=a.outlet_segment
+;
+
+create index idx_1 on gcpl_analysis.city_channel_segment_level_info(product_id,city_code,channel_code,outlet_segment);
+
+select 'city_channel_segment_level_tables creation ended';
+
+/* end of city_channel_segment_level table creation */
+
+
+/*distributor_channel_segment_level_info tables*/
+
+select 'distributor_channel_segment_level info tables creation started';
+
+
+drop temporary table if exists gcpl_analysis.distributor_channel_segment_level_ranking_sales;
+
+create temporary table gcpl_analysis.distributor_channel_segment_level_ranking_sales
+as
+select a.distributor_code,a.channel_code,a.outlet_segment,a.product_id,a.outlet_id,
+case when a.distributor_code!=@distributor_code_1 or a.channel_code!=@channel_code_1 or a.outlet_segment!=@outlet_segment_1 or a.product_id!=@product_id_1 then @outlet_rank:=1 else @outlet_rank:=@outlet_rank+1 end as outlet_rank_sales,
+@product_id_1:=a.product_id,
+@distributor_code_1:=a.distributor_code,
+@channel_code_1:=a.channel_code,
+@outlet_segment_1:=a.outlet_segment
+from
+gcpl_analysis.final_kpi_table a
+order by
+a.distributor_code,a.channel_code,a.outlet_segment,product_id,total_sales_value desc;
+
+create index idx_1 on  gcpl_analysis.distributor_channel_segment_level_ranking_sales(distributor_code,channel_code,outlet_segment,product_id,outlet_id);
+
+drop temporary table if exists gcpl_analysis.distributor_channel_segment_level_ranking_freq;
+
+create temporary table gcpl_analysis.distributor_channel_segment_level_ranking_freq
+as
+select a.distributor_code,a.channel_code,a.outlet_segment,a.product_id,a.outlet_id,
+case when a.distributor_code!=@distributor_code_2 or a.channel_code!=@channel_code_2 or a.outlet_segment!=@outlet_segment_2 or a.product_id!=@product_id_2 then @outlet_rank_1:=1 else @outlet_rank_1:=@outlet_rank_1+1 end as outlet_rank_freq,
+@product_id_2:=a.product_id,
+@distributor_code_2:=a.distributor_code,
+@channel_code_2:=a.channel_code,
+@outlet_segment_2:=a.outlet_segment
+from
+gcpl_analysis.final_kpi_table a
+order by
+a.distributor_code,a.channel_code,a.outlet_segment,product_id,SKU_Sale_frequency_month_level desc;
+
+create index idx_1 on  gcpl_analysis.distributor_channel_segment_level_ranking_freq(distributor_code,channel_code,outlet_segment,product_id,outlet_id);
+
+drop table if exists gcpl_analysis.distributor_channel_segment_product_level_count;
+
+create table gcpl_analysis.distributor_channel_segment_product_level_count
+as
+select a.distributor_code,a.channel_code,a.outlet_segment,a.product_id,count(*) as total_outlet_count,10 as bands_made
+from
+gcpl_analysis.final_kpi_table a
+group by
+a.distributor_code,a.channel_code,a.outlet_segment,product_id;
+
+drop table if exists gcpl_analysis.distributor_channel_segment_product_level_count_final;
+
+create table gcpl_analysis.distributor_channel_segment_product_level_count_final
+as
+select a.distributor_code,a.channel_code,a.outlet_segment,a.product_id,concat(total_outlet_count,'_',bands_made) as bucket_id
+from
+gcpl_analysis.distributor_channel_segment_product_level_count a
+group by
+a.distributor_code,a.channel_code,a.outlet_segment,product_id;
+
+create index idx_1 on  gcpl_analysis.distributor_channel_segment_product_level_count_final(distributor_code,channel_code,outlet_segment,product_id);
+
+drop table if exists gcpl_analysis.distributor_channel_segment_level_final_info;
+
+create table gcpl_analysis.distributor_channel_segment_level_final_info
+as
+select a.*,b.outlet_rank_freq
+
+from
+
+gcpl_analysis.distributor_channel_segment_level_ranking_sales a
+
+inner join
+
+gcpl_analysis.distributor_channel_segment_level_ranking_freq b
+
+on
+
+b.distributor_code=a.distributor_code
+and
+b.channel_code=a.channel_code
+and
+b.outlet_segment=a.outlet_segment
+and
+b.product_id=a.product_id
+and
+b.outlet_id=a.outlet_id
+;
+
+create index idx_1 on gcpl_analysis.distributor_channel_segment_level_final_info(distributor_code,channel_code,outlet_segment,product_id);
+
+drop table if exists gcpl_analysis.distributor_channel_segment_level_final_info_wth_bucket;
+
+create table gcpl_analysis.distributor_channel_segment_level_final_info_wth_bucket
+as
+select a.*,b.bucket_id
+
+from
+
+gcpl_analysis.distributor_channel_segment_level_final_info a
+
+inner join
+
+gcpl_analysis.distributor_channel_segment_product_level_count_final b
+
+on
+
+b.distributor_code=a.distributor_code
+and
+b.channel_code=a.channel_code
+and
+b.outlet_segment=a.outlet_segment
+and
+b.product_id=a.product_id
+;
+
+create index idx_1 on distributor_channel_segment_level_final_info_wth_bucket(bucket_Id,outlet_rank_sales);
+
+drop table if exists gcpl_analysis.distributor_channel_segment_level_final_info_wth_ntile_sales;
+
+create table gcpl_analysis.distributor_channel_segment_level_final_info_wth_ntile_sales
+as
+select a.*,b.ntile_band as ntile_rank_sales
+from
+gcpl_analysis.distributor_channel_segment_level_final_info_wth_bucket a
+
+inner join
+
+apex_platform.ntile_metadata b
+
+on
+
+b.total_rows_ntile_bucket=a.bucket_id
+
+and
+
+a.outlet_rank_sales between b.start_range and b.end_range
+;
+
+create index idx_1 on gcpl_analysis.distributor_channel_segment_level_final_info_wth_ntile_sales(bucket_id);
+
+drop table if exists gcpl_analysis.distributor_channel_segment_level_final_info_wth_ntile_freq;
+
+create table gcpl_analysis.distributor_channel_segment_level_final_info_wth_ntile_freq
+as
+select a.*,b.ntile_band as ntile_rank_freq
+from
+gcpl_analysis.distributor_channel_segment_level_final_info_wth_ntile_sales a
+
+inner join
+
+apex_platform.ntile_metadata b
+
+on
+
+b.total_rows_ntile_bucket=a.bucket_id
+
+and
+
+a.outlet_rank_freq between b.start_range and b.end_range
+;
+
+create index idx_1 on gcpl_analysis.distributor_channel_segment_level_final_info_wth_ntile_freq(outlet_id,product_Id);
+
+select 'distributor_channel_segment_level info tables creation completed';
+
+-- outlet and product level tables
+
+select 'outlet and product level table creation started';
+
+drop table if exists gcpl_analysis.outlet_product_category_level_info;
+
+create table gcpl_analysis.outlet_product_category_level_info
+as
+select 
+outlet_id,category_code,sum(total_sales_value) as sales_value_outlet_category_level
+from
+gcpl_analysis.final_kpi_table
+group by
+outlet_id,
+category_code;
+
+create index idx_1 on gcpl_analysis.outlet_product_category_level_info(outlet_id,category_code);
+
+drop table if exists gcpl_analysis.outlet_product_brand_level_info;
+
+
+create table gcpl_analysis.outlet_product_brand_level_info
+as
+select 
+outlet_id,brand_code,sum(total_sales_value) as sales_value_outlet_brand_level
+from
+gcpl_analysis.final_kpi_table
+group by
+outlet_id,
+brand_code;
+
+create index idx_1 on gcpl_analysis.outlet_product_brand_level_info(outlet_id,brand_code);
+
+
+drop table if exists gcpl_analysis.outlet_level_info;
+
+
+create table gcpl_analysis.outlet_level_info
+as
+select 
+outlet_id,outlet_code,sum(total_sales_value) as sales_value_outlet_level,count(distinct product_id) as unique_product_count,sum(total_sales_value)/count(distinct product_id) as avg_sales_value_per_product
+from
+gcpl_analysis.final_kpi_table
+group by
+outlet_code
+;
+
+create index idx_1 on gcpl_analysis.outlet_level_info(outlet_id);
+
+
+drop table if exists gcpl_analysis.city_product_level_price_info;
+
+create table gcpl_analysis.city_product_level_price_info
+as
+(select city_code,product_id,product_code,sum(sales_value)/sum(sales_units) as average_product_price
+from
+gcpl_analysis.base_sales_data
+where
+tenant_id=p_tenant_id
+and
+operating_cycle_id between l_min_operating_cycle_id_latest_three_months_window and l_max_operating_cycle_id_full_window
+group by
+city_code,product_code)
+union all
+(select city_code,product_id,product_code,sum(sales_value)/sum(sales_units) as average_product_price
+from
+gcpl_analysis.base_sales_data
+where
+tenant_id=p_tenant_id
+group by
+city_code,product_code
+having 
+min(operating_cycle_id)=l_min_operating_cycle_id_full_window and max(operating_cycle_id)<l_min_operating_cycle_id_latest_three_months_window);
+
+create index idx_1 on gcpl_analysis.city_product_level_price_info(city_code,product_id);
+
+
+drop table if exists gcpl_analysis.outlet_level_average_product_price_info;
+
+create table gcpl_analysis.outlet_level_average_product_price_info
+as
+select a.outlet_id,avg(b.average_product_price) as avg_per_product_price
+from
+gcpl_analysis.final_kpi_table a
+inner join
+gcpl_analysis.city_product_level_price_info b
+on
+b.city_code=a.city_code
+and
+b.product_id=a.product_id
+
+group by
+
+a.outlet_id;
+
+
+create index idx_1 on gcpl_analysis.outlet_level_average_product_price_info(outlet_id);
+
+drop table if exists gcpl_analysis.outlet_product_combinations_last_one_month;
+
+create table gcpl_analysis.outlet_product_combinations_last_one_month
+as
+select distinct outlet_id,category_code,product_id
+from
+gcpl_analysis.base_sales_data
+where
+tenant_id=p_tenant_id
+and
+operating_cycle_id=l_max_operating_cycle_id_full_window;
+
+create index idx_1 on gcpl_analysis.outlet_product_combinations_last_one_month(outlet_id,product_id);
+
+drop table if exists gcpl_analysis.outlet_product_combinations_last_three_months;
+
+create table gcpl_analysis.outlet_product_combinations_last_three_months
+as
+select distinct outlet_id,category_code,product_id
+from
+gcpl_analysis.base_sales_data
+where
+tenant_id=p_tenant_id
+and
+operating_cycle_id between l_min_operating_cycle_id_latest_three_months_window and l_max_operating_cycle_id_full_window;
+
+create index idx_1 on gcpl_analysis.outlet_product_combinations_last_three_months(outlet_id,product_id);
+
+
+drop table if exists gcpl_analysis.outlet_product_combinations_prior_eleven_months;
+
+
+create table gcpl_analysis.outlet_product_combinations_prior_eleven_months
+as
+select distinct outlet_id,category_code,product_id
+from
+gcpl_analysis.base_sales_data
+where
+tenant_id=p_tenant_id
+and
+operating_cycle_id between l_min_operating_cycle_id_full_window
+and
+l_min_operating_cycle_id_latest_two_months_window;
+
+create index idx_1 on gcpl_analysis.outlet_product_combinations_prior_eleven_months(outlet_id,product_id);
+
+
+
+drop table if exists gcpl_analysis.outlet_product_combinations_prior_nine_months;
+
+create table gcpl_analysis.outlet_product_combinations_prior_nine_months
+as
+select distinct outlet_id,category_code,product_id
+from
+gcpl_analysis.base_sales_data
+where
+tenant_id=p_tenant_id
+and
+operating_cycle_id between l_min_operating_cycle_id_full_window
+and
+l_max_operating_cycle_id_prior_six_months_window;
+
+create index idx_1 on gcpl_analysis.outlet_product_combinations_prior_nine_months(outlet_id,product_id);
+
+drop  table if exists gcpl_analysis.outlet_level_new_product_info_last_one_month;
+
+create  table  gcpl_analysis.outlet_level_new_product_info_last_one_month
+
+as
+
+select a.outlet_Id,count(*) as new_product_count_last_one_month
+from
+gcpl_analysis.outlet_product_combinations_last_one_month a
+left outer join
+gcpl_analysis.outlet_product_combinations_prior_eleven_months b
+on
+b.outlet_id=a.outlet_id
+and
+b.product_id=a.product_id
+where
+b.outlet_id is null
+group by
+a.outlet_id;
+
+create index idx_1 on gcpl_analysis.outlet_level_new_product_info_last_one_month(outlet_id);
+
+
+drop  table if exists gcpl_analysis.outlet_level_new_product_info_last_three_months;
+
+create  table  gcpl_analysis.outlet_level_new_product_info_last_three_months
+
+as
+
+select a.outlet_Id,count(*) as new_product_count_last_three_months
+from
+gcpl_analysis.outlet_product_combinations_last_three_months a
+left outer join
+gcpl_analysis.outlet_product_combinations_prior_nine_months b
+on
+b.outlet_id=a.outlet_id
+and
+b.product_id=a.product_id
+where
+b.outlet_id is null
+group by
+a.outlet_id;
+
+create index idx_1 on gcpl_analysis.outlet_level_new_product_info_last_three_months(outlet_id);
+
+
+drop table if exists gcpl_analysis.outlet_category_level_new_product_info_last_one_month;
+
+create table  gcpl_analysis.outlet_category_level_new_product_info_last_one_month
+
+as
+
+select a.outlet_Id,a.category_code,count(*) as new_product_count_outlet_category_last_one_month
+from
+gcpl_analysis.outlet_product_combinations_last_one_month a
+left outer join
+gcpl_analysis.outlet_product_combinations_prior_eleven_months b
+on
+b.outlet_id=a.outlet_id
+and
+b.product_id=a.product_id
+where
+b.outlet_id is null
+group by
+a.outlet_id,a.category_code;
+
+create index idx_1 on gcpl_analysis.outlet_category_level_new_product_info_last_one_month(outlet_id,category_code);
+
+
+drop table if exists gcpl_analysis.outlet_category_level_new_product_info_last_three_months;
+
+create table  gcpl_analysis.outlet_category_level_new_product_info_last_three_months
+
+as
+
+select a.outlet_Id,a.category_code,count(*) as new_product_count_outlet_category_last_three_months
+from
+gcpl_analysis.outlet_product_combinations_last_three_months a
+left outer join
+gcpl_analysis.outlet_product_combinations_prior_nine_months b
+on
+b.outlet_id=a.outlet_id
+and
+b.product_id=a.product_id
+where
+b.outlet_id is null
+group by
+a.outlet_id,a.category_code;
+
+create index idx_1 on gcpl_analysis.outlet_category_level_new_product_info_last_three_months(outlet_id,category_code);
+
+
+drop table if exists gcpl_analysis.outlet_category_level_full_info;
+
+create table gcpl_analysis.outlet_category_level_full_info 
+as
+select a.*,ifnull(b.new_product_count_outlet_category_last_one_month,0) as new_product_count_outlet_category_last_one_month,
+ifnull(c.new_product_count_outlet_category_last_three_months,0) as new_product_count_outlet_category_last_three_months,
+ifnull(d.new_product_count_last_one_month,0) as new_product_count_outlet_last_one_month,
+ifnull(e.new_product_count_last_three_months,0) as new_product_count_outlet_last_three_months,
+ifnull(f.avg_per_product_price,0) as avg_per_product_price_outlet_level,
+ifnull(g.sales_value_outlet_level,0) as sales_value_outlet_level,
+ifnull(g.unique_product_count,0) as unique_product_count_outlet_level,
+ifnull(g.avg_sales_value_per_product,0) as avg_sales_value_per_product_outlet_level
+from
+gcpl_analysis.outlet_product_category_level_info a
+left outer join 
+gcpl_analysis.outlet_category_level_new_product_info_last_one_month b
+on
+b.outlet_id=a.outlet_id
+and
+b.category_code=a.category_code
+left outer join 
+gcpl_analysis.outlet_category_level_new_product_info_last_three_months c 
+on
+c.outlet_id=a.outlet_id
+and
+c.category_code=a.category_code
+left outer join
+gcpl_analysis.outlet_level_new_product_info_last_one_month d
+on
+d.outlet_id=a.outlet_id
+left outer join 
+gcpl_analysis.outlet_level_new_product_info_last_three_months e
+on
+e.outlet_id=a.outlet_id
+left outer join
+gcpl_analysis.outlet_level_average_product_price_info f
+on
+f.outlet_id=a.outlet_id
+left outer join
+gcpl_analysis.outlet_level_info g
+on
+g.outlet_id=a.outlet_id
+;
+
+create index idx_1 on gcpl_analysis.outlet_category_level_full_info(outlet_id,category_code);
+
+select 'outlet and product level table creation ended';
+
+-- gap
+set @outlet_id:=0;
+set @product_id:=0;
+set @outlet_id_1:=0;
+set @product_id_1:=0;
+set @gap_rank:=0;
+set @qty_rank:=0;
+
+select 'median and standard deviation tables creation started';
+
+DROP TABLE IF EXISTS gcpl_analysis.tmp_gap_order;
+CREATE TABLE gcpl_analysis.tmp_gap_order AS
+SELECT 
+	a.outlet_id,
+	a.product_id,
+	a.day_level_gap,
+	CASE WHEN a.outlet_id!=@outlet_id OR a.product_id!=@product_id THEN @gap_rank:=1 ELSE @gap_rank:=@gap_rank+1 END AS gap_rank,
+@outlet_id:=a.outlet_id,
+@product_id:=a.product_id
+FROM gcpl_analysis.base_sales_data a 
+ORDER BY a.outlet_id, a.product_id, a.day_level_gap;
+
+create index idx_1 on gcpl_analysis.tmp_gap_order(outlet_id,product_id);
+
+DROP TABLE IF EXISTS gcpl_analysis.tmp_sales_qty_order;
+CREATE TABLE gcpl_analysis.tmp_sales_qty_order AS
+SELECT 
+	a.outlet_id,
+	a.product_id,
+	a.sales_units,
+	CASE WHEN a.outlet_id!=@outlet_id_1 OR a.product_id!=@product_id_1 THEN @qty_rank:=1 ELSE @qty_rank:=@qty_rank+1 END AS qty_rank,
+@outlet_id_1:=a.outlet_id,
+@product_id_1:=a.product_id
+FROM gcpl_analysis.base_sales_data a 
+ORDER BY a.outlet_id, a.product_id, a.sales_units;
+
+create index idx_1 on gcpl_analysis.tmp_sales_qty_order(outlet_id,product_id);
+
+drop table if exists gcpl_analysis.line_level_date_count;
+
+create  table gcpl_analysis.line_level_date_count
+as
+select outlet_id,product_id,count(*) as total_date_count 
+
+from
+
+gcpl_analysis.tmp_gap_order
+
+group by outlet_id,product_id;
+
+create index idx_1 on gcpl_analysis.line_Level_date_count(outlet_id,product_id);
+
+
+drop  table if exists gcpl_analysis.line_level_middle_value_decider_gap;
+
+create  table gcpl_analysis.line_level_middle_value_decider_gap
+as
+select a.outlet_id,a.product_id,a.day_level_gap,a.gap_rank,b.total_date_count,
+case when b.total_date_count%2=0 and (a.gap_rank=b.total_date_count/2 or a.gap_rank=(b.total_date_count/2)+1) then 1 
+ when b.total_date_count%2!=0 and (a.gap_rank=FLOOR((b.total_date_count/2)+1)) then 1 
+ else 0 end as middle_value_decider
+from
+gcpl_analysis.tmp_gap_order a
+inner join
+gcpl_analysis.line_Level_date_count b
+on
+b.outlet_id=a.outlet_id
+and
+b.product_id=a.product_id;
+
+create index idx_1 on gcpl_analysis.line_level_middle_value_decider_gap(outlet_id,product_id);
+
+drop table if exists gcpl_analysis.line_level_middle_value_decider_qty;
+
+create  table gcpl_analysis.line_level_middle_value_decider_qty
+as
+select a.outlet_id,a.product_id,a.sales_units,a.qty_rank,b.total_date_count,
+case when b.total_date_count%2=0 and (a.qty_rank=b.total_date_count/2 or a.qty_rank=(b.total_date_count/2)+1) then 1 
+ when b.total_date_count%2!=0 and (a.qty_rank=FLOOR((b.total_date_count/2)+1)) then 1 
+ else 0 end as middle_value_decider
+from
+gcpl_analysis.tmp_sales_qty_order a
+inner join
+gcpl_analysis.line_Level_date_count b
+on
+b.outlet_id=a.outlet_id
+and
+b.product_id=a.product_id;
+
+create index idx_1 on gcpl_analysis.line_level_middle_value_decider_qty(outlet_id,product_id);
+
+
+DROP TABLE IF EXISTS gcpl_analysis.tmp_med_stddev_gap;
+CREATE TABLE gcpl_analysis.tmp_med_stddev_gap AS
+SELECT 
+	a.outlet_id,
+	a.product_id,
+	AVG(
+	CASE 
+		WHEN a.middle_value_decider=1 then a.day_level_gap 
+		
+	END
+	) AS median_gap,
+STD(a.day_level_gap) AS stddev_gap
+
+FROM gcpl_analysis.line_level_middle_value_decider_gap a 
+GROUP BY 
+	a.outlet_id,
+	a.product_id
+;
+
+CREATE INDEX idx_1 ON gcpl_analysis.tmp_med_stddev_gap(outlet_id, product_id);
+
+DROP TABLE IF EXISTS gcpl_analysis.tmp_med_stddev_qty;
+CREATE TABLE gcpl_analysis.tmp_med_stddev_qty AS
+SELECT 
+	a.outlet_id,
+	a.product_id,
+	AVG(
+	CASE 
+		WHEN a.middle_value_decider=1 then a.sales_units 
+		
+	END
+	) AS median_qty,
+STD(a.sales_units) AS stddev_qty
+
+FROM gcpl_analysis.line_level_middle_value_decider_qty a 
+GROUP BY 
+	a.outlet_id,
+	a.product_id
+;
+
+CREATE INDEX idx_tmp_med_stddev_gap ON gcpl_analysis.tmp_med_stddev_qty(outlet_id, product_id);
+
+select 'median and standard deviation tables creation completed';
+
+
+select 'seasonality_table_creation started';
+
+DROP TABLE IF EXISTS gcpl_analysis.tmp_seasonality_idx;
+CREATE TABLE gcpl_analysis.tmp_seasonality_idx AS
+SELECT 
+	a.city_code,
+	a.outlet_segment,
+	a.product_id,
+	SUM(CASE WHEN a.operating_cycle_id = l_min_operating_cycle_id_full_window THEN a.sales_value ELSE 0 END) * 12 / SUM(a.sales_value) AS SI 
+FROM gcpl_analysis.base_sales_data a
+GROUP BY 
+	a.city_code,
+	a.outlet_segment,
+	a.product_id
+HAVING 
+	MIN(a.operating_cycle_id) = l_min_operating_cycle_id_full_window
+	AND COUNT(DISTINCT a.operating_cycle_id) >= 6
+;
+
+CREATE INDEX idx_tmp_seasonality_idx ON gcpl_analysis.tmp_seasonality_idx(city_code, outlet_segment, product_id);
+
+select 'seasonality_table creation completed';
+
+select 'out_of_stock_line creation started';
+
+drop table if exists gcpl_analysis.out_of_stock_outlet_product_combinations;
+
+create table gcpl_analysis.out_of_stock_outlet_product_combinations
+as
+select outlet_code,product_code from apex_dm_oos.oos_recommendations 
+where
+tenant_id=p_tenant_id
+and
+reco_operating_cycle_id=l_max_operating_cycle_id_full_window+1
+and
+oos_flag=1;
+
+create index idx_1 on gcpl_analysis.out_of_stock_outlet_product_combinations(outlet_code,product_code);
+
+select 'out_of_stock_line creation done';
+
+select 'sale_Line_creation started';
+
+drop table if exists gcpl_analysis.sales_outlet_product_combinations;
+
+create table gcpl_analysis.sales_outlet_product_combinations
+as
+select outlet_id,product_id from apex_edw.fact_sales_oc
+where
+tenant_id=p_tenant_id
+and
+operating_cycle_id=l_max_operating_cycle_id_full_window+1
+;
+
+create index idx_1 on gcpl_analysis.sales_outlet_product_combinations(outlet_id,product_id);
+
+select 'sale_line_creation done';
+
+select 'insertion to actual kpi table started';
+
+delete from ms_kpi_line_level_info_final_test where target_month_code=l_target_month_code and 
+
+(case when @l_city_code is null then city_code is not null else city_code=@l_city_code end);
+
+insert into ms_kpi_line_level_info_final_test
+select a.*, 
+case when g.outlet_code is null then 0 else 1 end as red_line_indicator, 
+ifnull(i.SI,1) as seasonality_index, 
+median_gap, 
+stddev_gap, 
+(SKU_Recency_of_purchase - median_gap)/stddev_gap as z_score_gap, 
+median_qty, 
+stddev_qty, 
+(SKU_Recency_of_purchase - median_qty)/stddev_qty as z_score_qty, 
+d.ntile_rank_sales, 
+d.ntile_rank_freq, 
+h.new_product_count_outlet_category_last_one_month as category_assortment_growth_last_one_month, 
+h.new_product_count_outlet_category_last_three_months as category_asssortment_growth_last_three_months, 
+h.new_product_count_outlet_last_one_month as outlet_assortment_growth_last_one_month, 
+h.new_product_count_outlet_last_three_months as outlet_assortment_growth_last_three_months, 
+h.unique_product_count_outlet_level as outlet_assortment_size, 
+j.new_outlets_count as new_outlet_count_product_seg_lvl, 
+j.total_outlet_count_prior_six_months as total_outlet_count_prior_six_months_segment_lvl, 
+j.new_outlets_count/j.total_outlet_count_prior_six_months*100 as sku_percentage_coverage_growth_last_3_months, 
+j.total_outlets_selling_product_last_one_month as total_outlets_selling_product_last_one_month_prod_seg_lvl, 
+j.total_outlet_count_last_one_month as total_outlet_count_last_one_month_segment_lvl, 
+j.total_outlets_selling_product_last_one_month/j.total_outlet_count_last_one_month*100 as sku_Per_cov_growth_last_one_month_segment_lvl,
+j.total_outlets_selling_product_last_three_months as total_outlets_selling_product_last_three_months_prod_seg_lvl, 
+j.total_outlet_count_last_three_months as total_outlet_count_last_three_months_segment_lvl, 
+j.total_outlets_selling_product_last_three_months/j.total_outlet_count_last_three_months*100 as sku_Per_cov_growth_last_three_months_segment_lvl,
+b.average_product_price as sku_price, 
+h.avg_per_product_price_outlet_level, 
+b.average_product_price/h.avg_per_product_price_outlet_level as sku_price_indexed_to_avg_outlet_price, 
+c.sales_value_outlet_brand_level, 
+h.sales_value_outlet_level, 
+c.sales_value_outlet_brand_level/h.sales_value_outlet_level as Brand_contribution_to_outlet_sale, 
+h.sales_value_outlet_category_level, 
+h.sales_value_outlet_category_level/h.sales_value_outlet_level as Category_Contribution_to_outlet_sale, 
+a.total_sales_value/h.sales_value_outlet_category_level as sku_contribution_to_outlet_category_sale, 
+a.total_sales_value/c.sales_value_outlet_brand_level as sku_contribution_to_outlet_brand_level, 
+avg_sales_value_per_outlet as avg_sales_value_per_outlet_city_channel_segment_lvl, 
+a.total_sales_value/avg_sales_value_per_outlet as sku_sale_index_city_channel_segment_lvl,
+case when k.outlet_id is null then 0 else 1 end as target_variable_sale_indicator,
+l_target_month_code as target_month_code
+from 
+gcpl_analysis.final_kpi_table a 
+inner join 
+gcpl_analysis.city_product_level_price_info b 
+on b.city_code=a.city_code 
+and b.product_id=a.product_id 
+inner join 
+outlet_product_brand_level_info c 
+on 
+c.outlet_id=a.outlet_id 
+and 
+c.brand_code=a.brand_code 
+inner join 
+gcpl_analysis.distributor_channel_segment_level_final_info_wth_ntile_freq d 
+on 
+d.outlet_id=a.outlet_id 
+and 
+d.product_id=a.product_id 
+inner join 
+gcpl_analysis.tmp_med_stddev_gap e 
+on 
+e.outlet_id=a.outlet_id 
+and 
+e.product_id=a.product_id 
+inner join 
+gcpl_analysis.tmp_med_stddev_qty f 
+on 
+f.outlet_id=a.outlet_id 
+and 
+f.product_id=a.product_id 
+inner join 
+gcpl_analysis.outlet_category_level_full_info h 
+on 
+h.outlet_id=a.outlet_id 
+and 
+h.category_code=a.category_code 
+inner join 
+gcpl_analysis.city_channel_segment_level_info j 
+on 
+j.product_id=a.product_id 
+and 
+j.city_code=a.city_code 
+and 
+j.channel_code=a.channel_code 
+and 
+j.outlet_segment=a.outlet_segment 
+left outer join 
+gcpl_analysis.out_of_stock_outlet_product_combinations g 
+on 
+g.outlet_code=a.outlet_code 
+and 
+g.product_code=a.product_code 
+
+left outer join 
+gcpl_analysis.sales_outlet_product_combinations k 
+on 
+k.outlet_id=a.outlet_id
+and 
+k.product_id=a.product_id
+
+left outer join 
+gcpl_analysis.tmp_seasonality_idx i 
+on 
+i.city_code=a.city_code 
+and 
+i.outlet_segment=a.outlet_segment 
+and 
+i.product_id=a.product_id 
+; 
+
+select 'insertion into actual kpi table ended';
+
+select 'kpi sheet validation_generation_started';
+
+set sql_safe_updates=0;
+
+delete from gcpl_analysis.kpi_validation_table_test where target_month_code=l_target_month_code;
+
+insert into gcpl_analysis.kpi_validation_table_test 
+select l_target_month_code as target_month_code,city_code,outlet_segment,count(distinct outlet_id) as outlet_count,
+count(distinct product_id) as product_count,
+max(SKU_Recency_of_purchase) as SKU_Recency_of_purchase_max,
+min(SKU_Recency_of_purchase) as SKU_Recency_of_purchase_min,
+count(case when SKU_Recency_of_purchase is null then 1 end) as SKU_Recency_of_purchase_null_count,
+max(SKU_Sale_frequency_month_level) as SKU_Sale_frequency_month_level_max,
+min(SKU_Sale_frequency_month_level) as SKU_Sale_frequency_month_level_min,
+count(case when SKU_Sale_frequency_month_level is null then 1 end) as SKU_Sale_frequency_month_level_null_count,
+max(SKU_Sale_frequency_day_level) as SKU_Sale_frequency_day_level_max,
+min(SKU_Sale_frequency_day_level) as SKU_Sale_frequency_day_level_min,
+count(case when SKU_Sale_frequency_day_level is null then 1 end) as SKU_Sale_frequency_day_level_null_count,
+sum(total_sales_value) as total_sales_value,
+avg(total_sales_value) as avg_sales_value,
+max(total_sales_value) as total_sales_value_max,
+min(total_sales_value) as total_sales_value_min,
+count(case when total_sales_value is null then 1 end) as total_sales_value_null_count,
+max(Last_sale_value_to_avg_sale_ratio) as Last_sale_value_to_avg_sale_ratio_max,
+min(Last_sale_value_to_avg_sale_ratio) as Last_sale_value_to_avg_sale_ratio_min,
+count(case when Last_sale_value_to_avg_sale_ratio is null then 1 end) as Last_sale_value_to_avg_sale_ratio_null_count,
+max(red_line_indicator) as red_line_indicator_max,
+min(red_line_indicator) as red_line_indicator_min,
+count(case when red_line_indicator is null then 1 end) as red_line_indicator_null_count,
+max(seasonality_index) as seasonality_index_max,
+min(seasonality_index) as seasonality_index_min,
+count(case when seasonality_index is null then 1 end) as seasonality_index_null_count,
+max(median_gap) as median_gap_max,
+min(median_gap) as median_gap_min,
+count(case when median_gap is null then 1 end) as median_gap_null_count,
+max(stddev_gap) as stddev_gap_max,
+min(stddev_gap) as stddev_gap_min,
+count(case when stddev_gap is null then 1 end) as stddev_gap_null_count,
+max(z_score_gap) as z_score_gap_max,
+min(z_score_gap) as z_score_gap_min,
+count(case when z_score_gap is null then 1 end) as z_score_gap_null_count,
+max(median_qty) as median_qty_max,
+min(median_qty) as median_qty_min,
+count(case when stddev_qty is null then 1 end) as median_qty_null_count,
+max(stddev_qty) as stddev_qty_max,
+min(stddev_qty) as stddev_qty_min,
+count(case when stddev_qty is null then 1 end) as stddev_qty_null_count,
+max(z_score_qty) as z_score_qty_max,
+min(z_score_qty) as z_score_qty_min,
+count(case when z_score_qty is null then 1 end) as z_score_qty_null_count,
+max(ntile_rank_sales) as ntile_rank_sales_max,
+min(ntile_rank_sales) as ntile_rank_sales_min,
+count(case when ntile_rank_sales is null then 1 end) as ntile_rank_sales_null_count,
+max(category_assortment_growth_last_one_month) as category_assortment_growth_last_one_month_max,
+min(category_assortment_growth_last_one_month) as category_assortment_growth_last_one_month_min,
+count(case when category_assortment_growth_last_one_month is null then 1 end) as category_assortment_growth_last_one_month_null_count,
+max(category_asssortment_growth_last_three_months) as category_assortment_growth_last_three_months_max,
+min(category_asssortment_growth_last_three_months) as category_assortment_growth_last_three_months_min,
+count(case when category_asssortment_growth_last_three_months is null then 1 end) as category_assortment_growth_last_three_months_null_count,
+max(outlet_assortment_growth_last_one_month) as outlet_assortment_growth_last_one_month_max,
+min(outlet_assortment_growth_last_one_month) as outlet_assortment_growth_last_one_month_min,
+count(case when outlet_assortment_growth_last_one_month is null then 1 end) as outlet_assortment_growth_last_one_month_null_count,
+max(outlet_assortment_growth_last_three_months) as outlet_assortment_growth_last_three_months_max,
+min(outlet_assortment_growth_last_three_months) as outlet_assortment_growth_last_three_months_min,
+count(case when outlet_assortment_growth_last_three_months is null then 1 end) as outlet_assortment_growth_last_three_months_null_count,
+max(outlet_assortment_size) as outlet_assortment_size_max,
+min(outlet_assortment_size) as outlet_assortment_size_min,
+count(case when outlet_assortment_size is null then 1 end) as outlet_assortment_size_null_count,
+max(new_outlet_count_product_seg_lvl) as new_outlet_count_product_seg_lvl_max,
+min(new_outlet_count_product_seg_lvl) as new_outlet_count_product_seg_lvl_min,
+count(case when new_outlet_count_product_seg_lvl is null then 1 end) as new_outlet_count_product_seg_lvl_null_count,
+max(total_outlet_count_prior_six_months_segment_lvl) as total_outlet_count_prior_six_months_segment_lvl_max,
+min(total_outlet_count_prior_six_months_segment_lvl) as total_outlet_count_prior_six_months_segment_lvl_min,
+count(case when total_outlet_count_prior_six_months_segment_lvl is null then 1 end) as total_outlet_count_prior_six_months_segment_lvl_null_count,
+max(sku_percentage_coverage_growth_last_3_months) as sku_percentage_coverage_growth_last_3_months_max,
+min(sku_percentage_coverage_growth_last_3_months) as sku_percentage_coverage_growth_last_3_months_min,
+count(case when sku_percentage_coverage_growth_last_3_months is null then 1 end) as sku_percentage_coverage_growth_last_3_months_null_count,
+max(total_outlets_selling_product_last_one_month_prod_seg_lvl) as total_outlets_selling_product_last_one_month_prod_seg_lvl_max,
+min(total_outlets_selling_product_last_one_month_prod_seg_lvl) as total_outlets_selling_product_last_one_month_prod_seg_lvl_min,
+count(case when total_outlets_selling_product_last_one_month_prod_seg_lvl is null then 1 end) as total_outlets_sell_pro_one_month_prod_seg_lvl_null_count,
+max(total_outlet_count_last_one_month_segment_lvl) as total_outlet_count_last_one_month_segment_lvl_max,
+min(total_outlet_count_last_one_month_segment_lvl) as total_outlet_count_last_one_month_segment_lvl_min,
+count(case when total_outlet_count_last_one_month_segment_lvl is null then 1 end) as total_outlet_count_last_one_month_segment_lvl_null_count,
+max(sku_Per_cov_growth_last_one_month_segment_lvl) as sku_Per_cov_growth_last_one_month_segment_lvl_max,
+min(sku_Per_cov_growth_last_one_month_segment_lvl) as sku_Per_cov_growth_last_one_month_segment_lvl_min,
+count(case when sku_Per_cov_growth_last_one_month_segment_lvl is null then 1 end) as sku_Per_cov_growth_last_one_month_segment_lvl_null_count,
+max(total_outlets_selling_product_last_three_months_prod_seg_lvl) as total_outlets_selling_product_last_three_months_prod_seg_lvl_max,
+min(total_outlets_selling_product_last_three_months_prod_seg_lvl) as total_outlets_selling_product_last_three_months_prod_seg_lvl_min,
+count(case when total_outlets_selling_product_last_three_months_prod_seg_lvl is null then 1 end) as total_outlets_sell_pro_last_thr_months_prod_seg_lvl_null_count,
+max(total_outlet_count_last_three_months_segment_lvl) as total_outlet_count_last_three_months_segment_lvl_max,
+min(total_outlet_count_last_three_months_segment_lvl) as total_outlet_count_last_three_months_segment_lvl_min,
+count(case when total_outlet_count_last_three_months_segment_lvl is null then 1 end) as total_outlet_count_last_three_months_segment_lvl_null_count,
+max(sku_Per_cov_growth_last_three_months_segment_lvl) as sku_Per_cov_growth_last_three_months_segment_lvl_max,
+min(sku_Per_cov_growth_last_three_months_segment_lvl) as sku_Per_cov_growth_last_three_months_segment_lvl_min,
+count(case when sku_Per_cov_growth_last_three_months_segment_lvl is null then 1 end) as sku_Per_cov_growth_last_three_months_segment_lvl_null_count,
+max(sku_price) as sku_price_max,
+min(sku_price) as sku_price_min,
+count(case when sku_price is null then 1 end) as sku_price_null_count,
+max(avg_per_product_price_outlet_level) as avg_per_product_price_outlet_level_max,
+min(avg_per_product_price_outlet_level) as avg_per_product_price_outlet_level_min,
+count(case when avg_per_product_price_outlet_level is null then 1 end) as avg_per_product_price_outlet_level_null_count,
+max(sku_price_indexed_to_avg_outlet_price) as sku_price_indexed_to_avg_outlet_price_max,
+min(sku_price_indexed_to_avg_outlet_price) as sku_price_indexed_to_avg_outlet_price_min,
+count(case when sku_price_indexed_to_avg_outlet_price is null then 1 end) as sku_price_indexed_to_avg_outlet_price_null_count,
+max(sales_value_outlet_brand_level) as sales_value_outlet_brand_level_max,
+min(sales_value_outlet_brand_level) as sales_value_outlet_brand_level_min,
+count(case when sales_value_outlet_brand_level is null then 1 end) as sales_value_outlet_brand_level_null_count,
+max(sales_value_outlet_level) as sales_value_outlet_level_max,
+min(sales_value_outlet_level) as sales_value_outlet_level_min,
+count(case when sales_value_outlet_level is null then 1 end) as sales_value_outlet_level_null_count,
+max(Brand_contribution_to_outlet_sale) as Brand_contribution_to_outlet_sale_max,
+min(Brand_contribution_to_outlet_sale) as Brand_contribution_to_outlet_sale_min,
+count(case when Brand_contribution_to_outlet_sale is null then 1 end) as Brand_contribution_to_outlet_sale_null_count,
+max(sales_value_outlet_category_level) as sales_value_outlet_category_level_max,
+min(sales_value_outlet_category_level) as sales_value_outlet_category_level_min,
+count(case when sales_value_outlet_category_level is null then 1 end) as sales_value_outlet_category_level_null_count,
+max(Category_Contribution_to_outlet_sale) as Category_Contribution_to_outlet_sale_max,
+min(Category_Contribution_to_outlet_sale) as Category_Contribution_to_outlet_sale_min,
+count(case when Category_Contribution_to_outlet_sale is null then 1 end) as Category_Contribution_to_outlet_sale_null_count,
+max(sku_contribution_to_outlet_category_sale) as sku_contribution_to_outlet_category_sale_max,
+min(sku_contribution_to_outlet_category_sale) as sku_contribution_to_outlet_category_sale_min,
+count(case when sku_contribution_to_outlet_category_sale is null then 1 end) as sku_contribution_to_outlet_category_sale_null_count,
+max(sku_contribution_to_outlet_brand_level) as sku_contribution_to_outlet_brand_level_max,
+min(sku_contribution_to_outlet_brand_level) as sku_contribution_to_outlet_brand_level_min,
+count(case when sku_contribution_to_outlet_brand_level is null then 1 end) as sku_contribution_to_outlet_brand_level_null_count,
+max(avg_sales_value_per_outlet_city_channel_segment_lvl) as avg_sales_value_per_outlet_city_channel_segment_lvl_max,
+min(avg_sales_value_per_outlet_city_channel_segment_lvl) as avg_sales_value_per_outlet_city_channel_segment_lvl_min,
+count(case when avg_sales_value_per_outlet_city_channel_segment_lvl is null then 1 end) as avg_sales_value_per_outlet_city_channel_segment_lvl_null_count,
+max(sku_sale_index_city_channel_segment_lvl) as sku_sale_index_city_channel_segment_lvl_max,
+min(sku_sale_index_city_channel_segment_lvl) as sku_sale_index_city_channel_segment_lvl_min,
+count(case when sku_sale_index_city_channel_segment_lvl is null then 1 end) as sku_sale_index_city_channel_segment_lvl_null_count,
+max(target_variable_sale_indicator) as target_variable_sale_indicator_max,
+min(target_variable_sale_indicator) as target_variable_sale_indicator_min,
+count(case when target_variable_sale_indicator is null then 1 end) as target_variable_sale_indicator_null_count
+from gcpl_analysis.ms_kpi_line_level_info_final where target_month_code=l_target_month_code
+group by city_code,outlet_segment;
+
+select 'kpi validation report generated';
+
+
+END$$
+DELIMITER ;
