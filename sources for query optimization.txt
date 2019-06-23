@@ -1,0 +1,8 @@
+https://www.safaribooksonline.com/library/view/high-performance-mysql/9780596101718/ch06.html
+
+http://www.infoworld.com/article/2604472/database/10-more-dos-and-donts-for-faster-sql-queries.html
+
+http://www.codeproject.com/Articles/43629/Top-steps-to-optimize-data-access-in-SQL-Serv
+
+
+
